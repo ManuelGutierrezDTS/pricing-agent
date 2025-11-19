@@ -1,0 +1,48 @@
+# docker-compose.yml
+# For local development and testing
+
+version: '3.8'
+
+services:
+  pricing-agent-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pricing-agent-api
+    ports:
+      - "8000:8000"
+    environment:
+      # API Credentials - load from .env file
+      - DAT_ORG_USERNAME=${DAT_ORG_USERNAME}
+      - DAT_ORG_PASSWORD=${DAT_ORG_PASSWORD}
+      - DAT_USER_EMAIL=${DAT_USER_EMAIL}
+      - DAT_ORG_TOKEN_URL=${DAT_ORG_TOKEN_URL}
+      - DAT_USER_TOKEN_URL=${DAT_USER_TOKEN_URL}
+      - DAT_RATE_LOOKUP_URL=${DAT_RATE_LOOKUP_URL}
+      - DAT_FORECAST_URL=${DAT_FORECAST_URL}
+      - GS_CLIENT_ID=${GS_CLIENT_ID}
+      - GS_CLIENT_SECRET=${GS_CLIENT_SECRET}
+      - GS_AUTH_URL=${GS_AUTH_URL}
+      - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}
+      # Azure Blob Storage
+      - AZ_BLOB_ACCOUNT=${AZ_BLOB_ACCOUNT}
+      - AZ_BLOB_CONTAINER=${AZ_BLOB_CONTAINER}
+      - AZ_BLOB_FILE=${AZ_BLOB_FILE}
+      - AZ_BLOB_KEY=${AZ_BLOB_KEY}
+    volumes:
+      # Mount unity data directory (optional for local testing)
+      - ./unity:/app/unity
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# Optional: Add logging configuration
+# logging:
+#   driver: "json-file"
+#   options:
+#     max-size: "10m"
+#     max-file: "3"

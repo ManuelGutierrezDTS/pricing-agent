@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+!README.md
+*.docx
+*.pdf
+
+# Data files (should be loaded from Azure or mounted)
+*.csv
+*.xlsx
+*.xls
+*.json
+!validation_results.json
+
+# Environment
+.env.local
+.env.*.local
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# CI/CD
+.github/
+
+# Logs
+*.log
+logs/
+
+# Testing
+tests/
+.coverage
+htmlcov/
+
+# Large files
+*.zip
+*.tar.gz
