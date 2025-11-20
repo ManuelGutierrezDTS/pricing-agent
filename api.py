@@ -18,12 +18,13 @@ import pandas as pd
 from config import PATH_CONFIG
 from modules.data.unity_catalog import check_and_refresh_unity
 from modules.analysis.integrated import run_integrated_analysis
+from modules.utils.vooma_logger import get_vooma_logger
 
 # Initialize FastAPI
 app = FastAPI(
     title="DTS Pricing Agent API",
     description="Advanced freight pricing analysis and validation system",
-    version="3.0.0",
+    version="3.1.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -84,10 +85,12 @@ class PricingRequest(BaseModel):
     pickup_date: Optional[str] = Field(None, description="Pickup date (YYYY-MM-DD) - optional")
     delivery_date: Optional[str] = Field(None, description="Delivery date (YYYY-MM-DD) - optional")
     weight: Optional[float] = Field(None, description="Load weight in lbs - optional")
+    quote_id: Optional[str] = Field(None, description="Vooma quote ID - optional")
 
     class Config:
         json_schema_extra = {
             "example": {
+                "quote_id": "VOOMA-12345",
                 "proposed_price": 1500,
                 "carrier_cost": "auto",
                 "stops": [
@@ -109,6 +112,15 @@ class PricingResponse(BaseModel):
     analysis_results: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     execution_time_seconds: Optional[float] = None
+
+
+class VoomaSimplifiedResponse(BaseModel):
+    """Simplified response for Vooma integration"""
+    quote_id: str
+    evaluation: Dict[str, Any]
+    pricing: Dict[str, Any]
+    recommendation: str
+    execution_time_seconds: float
 
 
 # ==========================================================================================
@@ -142,11 +154,12 @@ async def root():
     """Root endpoint - API information"""
     return {
         "name": "DTS Pricing Agent API",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "status": "running",
         "endpoints": {
             "health": "/health",
             "analyze": "/api/v1/analyze",
+            "vooma_analyze": "/api/v1/vooma/analyze",
             "docs": "/docs",
             "redoc": "/redoc"
         },
@@ -176,6 +189,8 @@ async def analyze_pricing(request: PricingRequest):
     - Provides accept/reject recommendation
     
     Returns detailed analysis with confidence scores and suggested actions.
+    
+    NOTE: This endpoint does NOT log executions to CSV. Use /api/v1/vooma/analyze for logging.
     """
     start_time = datetime.utcnow()
     
@@ -215,6 +230,8 @@ async def analyze_pricing(request: PricingRequest):
         # Calculate execution time
         execution_time = (datetime.utcnow() - start_time).total_seconds()
         
+        # ❌ NO LOGGING FOR THIS ENDPOINT - Only /api/v1/vooma/analyze logs to CSV
+        
         # Return response
         return PricingResponse(
             success=True,
@@ -234,6 +251,126 @@ async def analyze_pricing(request: PricingRequest):
             status_code=500,
             detail=f"Internal server error: {str(e)}"
         )
+
+
+@app.post("/api/v1/vooma/analyze", response_model=VoomaSimplifiedResponse)
+async def vooma_analyze_pricing(request: PricingRequest):
+    """
+    Vooma-specific endpoint with simplified response
+    
+    This endpoint is designed for Vooma integration and returns a simplified response
+    with only the essential information needed for the UI:
+    - Rating and action (APPROVE/REJECT/REVIEW)
+    - Recommended pricing
+    - Brief recommendation text
+    
+    ✅ LOGS EVERY EXECUTION to CSV in Azure Blob Storage (voomalogsdts/pricing-logs/vooma_pricing_history.csv)
+    """
+    start_time = datetime.utcnow()
+    
+    try:
+        # Require quote_id for Vooma endpoint
+        if not request.quote_id:
+            raise HTTPException(
+                status_code=400,
+                detail="quote_id is required for Vooma endpoint"
+            )
+        
+        # Check if Unity Catalog is loaded
+        if unity_df is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Unity Catalog not loaded. Service unavailable."
+            )
+        
+        # Convert request to config format
+        analysis_config = {
+            "proposed_price": request.proposed_price,
+            "carrier_cost": request.carrier_cost,
+            "stops": [{"type": s.type, "zip": s.zip} for s in request.stops],
+            "customer_name": request.customer_name,
+            "equipment_type": request.equipment_type,
+            "pickup_date": request.pickup_date,
+            "delivery_date": request.delivery_date,
+            "weight": request.weight,
+        }
+        
+        # Run integrated analysis
+        results = run_integrated_analysis(unity_df, analysis_config)
+        
+        # Convert numpy types
+        results = convert_numpy_types(results)
+        
+        # Check for errors
+        if "error" in results:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Analysis error: {results['error']}"
+            )
+        
+        # Calculate execution time
+        execution_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        # Determine action based on rating and confidence
+        final_rating = results.get("final_rating", "NO_DATA")
+        combined_confidence = results.get("combined_confidence", 0)
+        
+        if final_rating == "NO_DATA" or combined_confidence < 30:
+            action = "REVIEW"
+        elif final_rating in ["EXCELLENT", "GOOD"]:
+            action = "APPROVE"
+        elif final_rating == "ACCEPTABLE" and combined_confidence >= 60:
+            action = "REVIEW"
+        else:
+            action = "REJECT"
+        
+        # Build simplified response
+        simplified_response = VoomaSimplifiedResponse(
+            quote_id=request.quote_id,
+            evaluation={
+                "rating": final_rating,
+                "action": action,
+                "confidence": combined_confidence
+            },
+            pricing={
+                "proposed_price": request.proposed_price,
+                "recommended_price": results.get("suggested_price"),
+                "carrier_cost": results.get("negotiation_range", {}).get("carrier_cost"),
+                "proposed_margin_pct": results.get("prc_validation", {}).get("proposed_margin_pct"),
+                "suggested_margin_pct": results.get("suggested_margin_pct")
+            },
+            recommendation=results.get("prc_validation", {}).get("recommendation", "No recommendation available"),
+            execution_time_seconds=round(execution_time, 2)
+        )
+        
+        # ✅ LOG TO CSV - This is the ONLY endpoint that logs
+        try:
+            logger = get_vooma_logger()
+            logger.log_execution(
+                quote_id=request.quote_id,
+                request_data=request.dict(),
+                analysis_results=results,
+                execution_time=execution_time,
+                user="vooma_user"
+            )
+            print(f"✅ Logged Vooma execution: {request.quote_id}")
+        except Exception as log_error:
+            print(f"⚠️ Warning: Could not log execution: {log_error}")
+        
+        return simplified_response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error in vooma_analyze_pricing: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
 
 @app.get("/api/v1/unity/refresh")
 async def refresh_unity(background_tasks: BackgroundTasks):
@@ -297,7 +434,7 @@ async def not_found_handler(request, exc):
     return {
         "error": "Not Found",
         "message": f"The requested endpoint does not exist: {request.url.path}",
-        "available_endpoints": ["/", "/health", "/api/v1/analyze", "/docs"]
+        "available_endpoints": ["/", "/health", "/api/v1/analyze", "/api/v1/vooma/analyze", "/docs"]
     }
 
 @app.exception_handler(500)
