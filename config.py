@@ -18,9 +18,9 @@ SINGLE_ANALYSIS = {
     "carrier_cost": "auto",
     
     "stops": [
-        {"type": "PICKUP", "zip": "60160"},
+        {"type": "PICKUP", "zip": "91764"},
         # Para multistop, agregar más DROP stops:
-         {"type": "DROP", "zip": "53703"},
+         {"type": "DROP", "zip": "85031"},
         # {"type": "DROP", "zip": "17011"},
         # {"type": "DROP", "zip": "27545"},
         # {"type": "DROP", "zip": "27529"},
@@ -31,8 +31,8 @@ SINGLE_ANALYSIS = {
         # {"type": "DROP", "zip": "29732"}
     ],
     
-    "customer_name": "SureBuilt",
-    "equipment_type": "HOTSHOT",
+    "customer_name": "DOMTAR",
+    "equipment_type": "VAN",
     "pickup_date": None,
     "delivery_date": None,
     "weight": 6036,

@@ -11,6 +11,8 @@ from typing import List, Optional, Dict, Any
 import sys
 import json
 from datetime import datetime
+import numpy as np
+import pandas as pd
 
 # Import pricing agent modules
 from config import PATH_CONFIG
@@ -40,6 +42,30 @@ unity_df = None
 
 
 # ==========================================================================================
+# HELPER FUNCTIONS
+# ==========================================================================================
+
+def convert_numpy_types(obj):
+    """Recursively convert numpy types to Python native types for JSON serialization"""
+    if isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, (np.bool_, np.bool)):
+        return bool(obj)
+    elif isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32, np.float16)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif pd.isna(obj):
+        return None
+    else:
+        return obj
+
+
+# ==========================================================================================
 # PYDANTIC MODELS
 # ==========================================================================================
 
@@ -52,7 +78,7 @@ class PricingRequest(BaseModel):
     """Request model for pricing analysis"""
     proposed_price: float = Field(..., description="Proposed customer price", gt=0)
     carrier_cost: str | float = Field(default="auto", description="Carrier cost or 'auto' for automatic calculation")
-    stops: List[Stop] = Field(..., description="List of stops (at least 2: 1 PICKUP + 1 DROP)", min_items=2)
+    stops: List[Stop] = Field(..., description="List of stops (at least 2: 1 PICKUP + 1 DROP)", min_length=2)
     customer_name: str = Field(..., description="Customer name")
     equipment_type: str = Field(..., description="Equipment type (e.g., FLATBED, VAN, REEFER, HOTSHOT)")
     pickup_date: Optional[str] = Field(None, description="Pickup date (YYYY-MM-DD) - optional")
@@ -175,6 +201,9 @@ async def analyze_pricing(request: PricingRequest):
         
         # Run integrated analysis
         results = run_integrated_analysis(unity_df, analysis_config)
+        
+        # 🔧 FIX: Convert numpy types to Python native types
+        results = convert_numpy_types(results)
         
         # Check for errors in results
         if "error" in results:
