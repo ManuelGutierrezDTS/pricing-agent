@@ -19,12 +19,13 @@ from config import PATH_CONFIG
 from modules.data.unity_catalog import check_and_refresh_unity
 from modules.analysis.integrated import run_integrated_analysis
 from modules.utils.vooma_logger import get_vooma_logger
+from modules.ai.ai_rec import get_ai_recommendation_engine
 
 # Initialize FastAPI
 app = FastAPI(
     title="DTS Pricing Agent API",
     description="Advanced freight pricing analysis and validation system",
-    version="3.1.0",
+    version="3.2.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -123,6 +124,47 @@ class VoomaSimplifiedResponse(BaseModel):
     execution_time_seconds: float
 
 
+class AIRecommendationRequest(BaseModel):
+    """Request model for AI recommendation"""
+    validation_result: Dict[str, Any] = Field(..., description="Full pricing analysis results from /api/v1/analyze")
+    context_prompt: Optional[str] = Field(
+        "We're running out to Christmas season",
+        description="Editable business context for the recommendation"
+    )
+    max_lines: Optional[int] = Field(4, description="Maximum lines for recommendation", ge=1, le=10)
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "validation_result": {
+                    "final_rating": "POOR",
+                    "combined_confidence": 85,
+                    "suggested_price": 1162.00,
+                    "negotiation_range": {
+                        "proposed_price": 1500.00,
+                        "carrier_cost": 1025.00
+                    },
+                    "prc_validation": {
+                        "rating": "POOR",
+                        "recommendation": "Pricing far outside historical ranges",
+                        "proposed_margin_pct": 31.67,
+                        "flags": ["margin_high_warning", "Above 75th percentile"]
+                    }
+                },
+                "context_prompt": "Christmas season, customer is loyal, prioritize closing",
+                "max_lines": 4
+            }
+        }
+
+
+class AIRecommendationResponse(BaseModel):
+    """Response model for AI recommendation"""
+    success: bool
+    recommendation: str
+    context_used: str
+    execution_time_seconds: float
+
+
 # ==========================================================================================
 # STARTUP/SHUTDOWN EVENTS
 # ==========================================================================================
@@ -154,12 +196,14 @@ async def root():
     """Root endpoint - API information"""
     return {
         "name": "DTS Pricing Agent API",
-        "version": "3.1.0",
+        "version": "3.2.0",
         "status": "running",
         "endpoints": {
             "health": "/health",
             "analyze": "/api/v1/analyze",
             "vooma_analyze": "/api/v1/vooma/analyze",
+            "ai_recommendation": "/api/v1/ai-recommendation",
+            "ai_recommendation_structured": "/api/v1/ai-recommendation/structured",
             "docs": "/docs",
             "redoc": "/redoc"
         },
@@ -372,6 +416,116 @@ async def vooma_analyze_pricing(request: PricingRequest):
         )
 
 
+@app.post("/api/v1/ai-recommendation", response_model=AIRecommendationResponse)
+async def get_ai_recommendation(request: AIRecommendationRequest):
+    """
+    Generate AI-powered sales recommendation based on pricing analysis
+    
+    This endpoint takes the full pricing analysis result from /api/v1/analyze and generates
+    a concise, sales-oriented recommendation using OpenAI GPT.
+    
+    The context_prompt is fully editable to reflect current business conditions:
+    - "Christmas season, customer is loyal, prioritize closing"
+    - "End of quarter push, need to close deals"
+    - "Tight margin month, need profitability"
+    - "Customer is price-sensitive, competitor quoted lower"
+    
+    Returns a 4-line actionable sales recommendation.
+    """
+    start_time = datetime.utcnow()
+    
+    try:
+        # Get AI engine
+        ai_engine = get_ai_recommendation_engine()
+        
+        # Generate recommendation
+        recommendation = ai_engine.generate_recommendation(
+            validation_result=request.validation_result,
+            context_prompt=request.context_prompt,
+            max_lines=request.max_lines
+        )
+        
+        # Calculate execution time
+        execution_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        return AIRecommendationResponse(
+            success=True,
+            recommendation=recommendation,
+            context_used=request.context_prompt,
+            execution_time_seconds=round(execution_time, 2)
+        )
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Configuration error: {str(e)}. Please ensure OPENAI_API_KEY is set."
+        )
+    except Exception as e:
+        print(f"❌ Error generating AI recommendation: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating recommendation: {str(e)}"
+        )
+
+
+@app.post("/api/v1/ai-recommendation/structured")
+async def get_ai_recommendation_structured(request: AIRecommendationRequest):
+    """
+    Generate structured AI recommendation with additional metadata
+    
+    Returns a more detailed response including:
+    - AI-generated recommendation text
+    - Confidence level (HIGH/MEDIUM/LOW)
+    - Key factors affecting the recommendation
+    - Suggested action (APPROVE/ADJUST_PRICE/REVIEW)
+    - Business context used
+    
+    This endpoint provides more comprehensive information for decision-making.
+    """
+    start_time = datetime.utcnow()
+    
+    try:
+        # Get AI engine
+        ai_engine = get_ai_recommendation_engine()
+        
+        # Generate structured recommendation
+        result = ai_engine.generate_recommendation_structured(
+            validation_result=request.validation_result,
+            context_prompt=request.context_prompt
+        )
+        
+        # Calculate execution time
+        execution_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        return {
+            "success": True,
+            "recommendation": result["recommendation"],
+            "confidence_level": result["confidence_level"],
+            "key_factors": result["key_factors"],
+            "suggested_action": result["suggested_action"],
+            "context_used": request.context_prompt,
+            "execution_time_seconds": round(execution_time, 2)
+        }
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Configuration error: {str(e)}. Please ensure OPENAI_API_KEY is set."
+        )
+    except Exception as e:
+        print(f"❌ Error generating AI recommendation: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating recommendation: {str(e)}"
+        )
+
+
 @app.get("/api/v1/unity/refresh")
 async def refresh_unity(background_tasks: BackgroundTasks):
     """
@@ -434,7 +588,7 @@ async def not_found_handler(request, exc):
     return {
         "error": "Not Found",
         "message": f"The requested endpoint does not exist: {request.url.path}",
-        "available_endpoints": ["/", "/health", "/api/v1/analyze", "/api/v1/vooma/analyze", "/docs"]
+        "available_endpoints": ["/", "/health", "/api/v1/analyze", "/api/v1/vooma/analyze", "/api/v1/ai-recommendation", "/docs"]
     }
 
 @app.exception_handler(500)
